@@ -125,6 +125,79 @@ Server sẽ chạy mặc định tại: `http://localhost:8000`. Bạn có thể
 
 ---
 
+## 🐳 Hướng dẫn chạy bằng Docker (Docker Setup)
+
+Dự án đã được cấu hình sẵn `Dockerfile` (sử dụng Multi-stage build để tối ưu dung lượng) và `docker-compose.yml` để bạn dễ dàng triển khai.
+
+### ⚠️ Lưu ý quan trọng trước khi chạy
+Hãy chắc chắn rằng bạn đã tạo và cấu hình đầy đủ file `.env` từ `.env.example` trước khi khởi chạy Docker:
+```bash
+cp .env.example .env
+# Mở file .env và điền các API Key của OpenAI, Qdrant và Chatwoot
+```
+
+### Cách 1: Sử dụng Docker Compose (Khuyến nghị)
+
+Đây là cách nhanh nhất và tiện lợi nhất vì nó tự động build và nạp cấu hình từ file `.env` của bạn.
+
+1. **Khởi chạy container ở chế độ chạy ngầm (detached mode):**
+   ```bash
+   docker compose up -d --build
+   ```
+
+2. **Kiểm tra trạng thái hoạt động của container:**
+   ```bash
+   docker compose ps
+   ```
+
+3. **Xem nhật ký hoạt động (Logs):**
+   ```bash
+   docker compose logs -f
+   ```
+
+4. **Dừng hệ thống:**
+   ```bash
+   docker compose down
+   ```
+
+---
+
+### Cách 2: Sử dụng Docker CLI (Thủ công)
+
+Nếu bạn không muốn sử dụng Docker Compose, bạn có thể build và chạy container bằng các lệnh Docker cơ bản:
+
+1. **Build Docker Image:**
+   ```bash
+   docker build -t fastapi-rag-app .
+   ```
+
+2. **Chạy Docker Container:**
+   Nạp trực tiếp file cấu hình `.env` thông qua tham số `--env-file`:
+   ```bash
+   docker run -d \
+     --name fastapi_rag_app \
+     -p 8000:8000 \
+     --env-file .env \
+     --restart always \
+     fastapi-rag-app
+   ```
+
+3. **Kiểm tra logs:**
+   ```bash
+   docker logs -f fastapi_rag_app
+   ```
+
+4. **Dừng và xóa container:**
+   ```bash
+   docker stop fastapi_rag_app && docker rm fastapi_rag_app
+   ```
+
+---
+
+Sau khi khởi chạy bằng Docker thành công, ứng dụng sẽ chạy tại `http://localhost:8000`. Bạn có thể truy cập `http://localhost:8000/docs` hoặc endpoint `GET /health` để kiểm tra.
+
+---
+
 ## 🧪 Ví dụ Request / Response (API Testing)
 
 ### 1. Kiểm tra trạng thái hệ thống (`GET /health`)

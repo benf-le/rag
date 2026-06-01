@@ -1,15 +1,18 @@
 version: '3.8'
 
 services:
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant_rag
+  # FastAPI RAG Application Server
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_rag_app
     ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Cổng chạy ứng dụng
+      - PORT=8000
+      # Hệ thống sẽ tự động dùng QDRANT_URL và QDRANT_API_KEY được cấu hình trong file .env
     restart: always
-
-volumes:
-  qdrant_data:

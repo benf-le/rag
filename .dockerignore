@@ -1,0 +1,31 @@
+# Bỏ qua git
+.git
+.gitignore
+
+# Bỏ qua môi trường ảo Python
+.venv
+venv
+ENV
+env
+*.venv
+
+# Bỏ qua Python bytecode và cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache
+.mypy_cache
+
+# Bỏ qua cấu hình môi trường cục bộ (vì docker-compose sẽ dùng env_file hoặc truyền qua environment)
+.env
+.env.*
+!.env.example
+
+# Bỏ qua các file tài liệu thiết kế và discussion local
+*.md
+implementation_plan.md
+planned_features_discussion.md
+
+# Bỏ qua các file tạm hệ điều hành
+.DS_Store
+Thumbs.db

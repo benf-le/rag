@@ -1,0 +1,64 @@
+# Python bytecode và cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Môi trường ảo (Virtual Environments)
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Cấu hình môi trường và bảo mật (Environment & Secrets)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.cert
+
+# IDE và Editor (VS Code, PyCharm, v.v.)
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.project
+.pydevproject
+.settings/
+
+# File hệ điều hành (OS generated files)
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Log files
+*.log
+pip-log.txt
+
+# Dữ liệu local và Vector Database (nếu chạy local)
+qdrant_storage/
+data/
+db/
+*.db
+*.sqlite3
+*.sqlite3-journal
+
+# Công cụ kiểm thử và báo cáo (Testing & Coverage)
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+.hypothesis/
+cython_debug/

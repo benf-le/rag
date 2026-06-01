@@ -5,7 +5,13 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Import các service của chúng ta
-from rag_service import ingest_document, generate_rag_response, qdrant_client, QDRANT_COLLECTION_NAME
+from rag_service import (
+    async_ingest_document,
+    async_ingest_product,
+    async_generate_rag_response,
+    async_qdrant_client,
+    QDRANT_COLLECTION_NAME
+)
 from chatwoot_service import send_chatwoot_reply
 
 # Load các biến môi trường
@@ -13,8 +19,8 @@ load_dotenv()
 
 # Khởi tạo FastAPI App với Metadata đầy đủ (tốt cho SEO/Swagger API Docs)
 app = FastAPI(
-    title="Simple RAG Chatwoot Base System",
-    description="Hệ thống RAG cơ bản tích hợp Chatwoot phục vụ học tập và nghiên cứu flow RAG end-to-end.",
+    title="Supplement Vector Data Product RAG System",
+    description="Hệ thống Vector Data Product & RAG chuyên dụng cho Thực phẩm chức năng tích hợp Chatwoot.",
     version="1.0.0"
 )
 
@@ -27,7 +33,28 @@ class IngestRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "text": "Công ty TNHH Vibe Code có trụ sở tại 123 Đường Láng, Hà Nội. Giờ làm việc từ 8:00 sáng đến 17:30 chiều, từ thứ Hai đến thứ Sáu hàng tuần. Số hotline hỗ trợ khách hàng là 1900-xxxx. Chính sách đổi trả hàng áp dụng trong vòng 7 ngày kể từ ngày nhận hàng với điều kiện sản phẩm còn nguyên tem mác."
+                "text": "Công ty TNHH Vibe Code có trụ sở tại 123 Đường Láng, Hà Nội. Giờ làm việc từ 8:00 sáng đến 17:30 chiều, từ thứ Hai đến thứ Sáu hàng tuần."
+            }
+        }
+
+
+class ProductIngestRequest(BaseModel):
+    product_id: str
+    name: str
+    descriptionShort: str
+    description: str
+    ingredient: str
+    type: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "product_id": "sp_alipas_01",
+                "name": "Sâm Alipas",
+                "descriptionShort": "Tăng cường sinh lực nam giới, kéo dài sung mãn.",
+                "description": "Sâm Alipas mới chứa các tinh chất quý hỗ trợ tăng cường testosterone nội sinh, làm chậm quá trình mãn dục nam và hỗ trợ cải thiện rối loạn cương dương.",
+                "ingredient": "Mật nhân (Eurycoma Longifolia), Tinh chất thông biển Pháp, chiết xuất hàu đại dương.",
+                "type": "Sinh lý nam"
             }
         }
 
@@ -37,16 +64,10 @@ class IngestRequest(BaseModel):
 async def process_rag_and_reply_chatwoot(account_id: int, conversation_id: int, query: str):
     """
     Hàm xử lý RAG bất đồng bộ chạy dưới nền (Background Task).
-    
-    TẠI SAO CẦN DÙNG BACKGROUND TASKS?
-    - Webhook của Chatwoot (và hầu hết các nền tảng khác) yêu cầu phản hồi HTTP 200 OK cực kỳ nhanh (thường dưới 2-3 giây).
-    - Quá trình RAG (Embedding câu hỏi -> Vector Search -> Ghép Prompt -> LLM Sinh đáp án) có thể tốn từ 2 đến 7 giây tùy tốc độ mạng và OpenAI API.
-    - Nếu xử lý đồng bộ trực tiếp trong Webhook API, Chatwoot sẽ bị timeout và tự động gửi lại webhook nhiều lần (gây ra vòng lặp vô hạn và spam tin nhắn).
-    - Sử dụng FastAPI `BackgroundTasks` giúp trả về HTTP 200 OK ngay lập tức cho Chatwoot, rồi chạy ngầm RAG và gửi phản hồi sau.
     """
     try:
-        # Bước 1: Thực hiện luồng RAG để lấy câu trả lời từ LLM
-        answer = generate_rag_response(query)
+        # Bước 1: Thực hiện luồng RAG để lấy câu trả lời từ LLM bất đồng bộ
+        answer = await async_generate_rag_response(query)
         
         # Bước 2: Gửi câu trả lời ngược lại Chatwoot qua API
         await send_chatwoot_reply(account_id, conversation_id, answer)
@@ -69,8 +90,8 @@ async def health_check():
     }
     
     try:
-        # Thử lấy thông tin collection để kiểm tra kết nối Qdrant
-        qdrant_client.collection_exists(QDRANT_COLLECTION_NAME)
+        # Thử lấy thông tin collection để kiểm tra kết nối Qdrant bất đồng bộ
+        await async_qdrant_client.collection_exists(QDRANT_COLLECTION_NAME)
         health_status["qdrant"] = "connected"
     except Exception as e:
         health_status["status"] = "unhealthy"
@@ -81,11 +102,11 @@ async def health_check():
     return JSONResponse(content=health_status, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
-@app.post("/ingest", summary="Nhập tài liệu tri thức vào Vector DB")
+@app.post("/ingest", summary="Nhập tài liệu tri thức chung vào Vector DB")
 async def ingest_data(payload: IngestRequest):
     """
     Endpoint nhận tài liệu dạng văn bản dài từ admin, thực hiện chunking, 
-    embedding và lưu trữ các vector đại diện vào Qdrant.
+    embedding và lưu trữ các vector đại diện vào Qdrant bất đồng bộ.
     """
     if not payload.text or not payload.text.strip():
         raise HTTPException(
@@ -94,8 +115,8 @@ async def ingest_data(payload: IngestRequest):
         )
         
     try:
-        # Gọi rag_service để ingest tài liệu
-        chunks_created = ingest_document(payload.text)
+        # Gọi rag_service bất đồng bộ để ingest tài liệu
+        chunks_created = await async_ingest_document(payload.text)
         
         return {
             "status": "success",
@@ -109,19 +130,79 @@ async def ingest_data(payload: IngestRequest):
         )
 
 
+@app.post("/ingest/product", summary="Nạp hoặc Cập nhật 1 sản phẩm TPCN có cấu trúc")
+async def ingest_single_product(payload: ProductIngestRequest):
+    """
+    API endpoint nhận thông tin 1 sản phẩm từ Admin CMS để nạp/cập nhật vector vào Qdrant.
+    Được thiết kế theo mô hình 'Delete-then-Insert' để chống trùng lặp dữ liệu.
+    """
+    try:
+        chunks_created = await async_ingest_product(
+            product_id=payload.product_id.strip(),
+            name=payload.name.strip(),
+            description_short=payload.descriptionShort.strip(),
+            description=payload.description.strip(),
+            ingredient=payload.ingredient.strip(),
+            product_type=payload.type.strip()
+        )
+        return {
+            "status": "success",
+            "message": f"Nạp/Cập nhật sản phẩm '{payload.name}' thành công!",
+            "chunks_created": chunks_created
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi hệ thống khi nạp sản phẩm '{payload.name}': {str(e)}"
+        )
+
+
+@app.post("/ingest/products/bulk", summary="Nạp hàng loạt nhiều sản phẩm TPCN (Bulk Import)")
+async def ingest_bulk_products(payload: list[ProductIngestRequest]):
+    """
+    API endpoint nhận danh sách nhiều sản phẩm để nạp hàng loạt (phục vụ import 49 sản phẩm ban đầu từ Admin).
+    """
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh sách sản phẩm nạp không được để trống."
+        )
+        
+    try:
+        total_chunks = 0
+        success_products = []
+        
+        # Gọi lần lượt nạp bất đồng bộ từng sản phẩm
+        for prod in payload:
+            chunks_created = await async_ingest_product(
+                product_id=prod.product_id.strip(),
+                name=prod.name.strip(),
+                description_short=prod.descriptionShort.strip(),
+                description=prod.description.strip(),
+                ingredient=prod.ingredient.strip(),
+                product_type=prod.type.strip()
+            )
+            total_chunks += chunks_created
+            success_products.append(prod.name)
+            
+        return {
+            "status": "success",
+            "message": f"Nạp hàng loạt thành công {len(payload)} sản phẩm!",
+            "total_chunks_created": total_chunks,
+            "products_imported": success_products
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi hệ thống khi nạp hàng loạt sản phẩm: {str(e)}"
+        )
+
+
 @app.post("/chatwoot/webhook", summary="Nhận webhook sự kiện từ Chatwoot")
 async def chatwoot_webhook(background_tasks: BackgroundTasks, payload: dict = Body(...)):
     """
     Endpoint tiếp nhận webhook từ Chatwoot khi có tin nhắn mới.
-    
-    LUỒNG XỬ LÝ WEBHOOK:
-    1. Kiểm tra sự kiện: chỉ xử lý sự kiện tạo tin nhắn (`message_created`).
-    2. Kiểm tra nguồn tin nhắn: chỉ xử lý tin nhắn đi vào (`incoming` - từ khách hàng). 
-       BỎ QUA tin nhắn đi ra (`outgoing` - từ bot/agent) và tin nhắn nội bộ (private) để tránh lặp vô hạn.
-    3. Trích xuất: ID tài khoản Chatwoot, ID cuộc hội thoại, và nội dung câu hỏi.
-    4. Kích hoạt Background Task để thực hiện luồng RAG và gửi phản hồi mà không bắt Chatwoot chờ đợi.
     """
-    # 1. Trích xuất các thông tin cốt lõi từ webhook payload
     event = payload.get("event")
     message_type = payload.get("message_type")
     is_private = payload.get("private", False)
@@ -129,35 +210,27 @@ async def chatwoot_webhook(background_tasks: BackgroundTasks, payload: dict = Bo
     
     print(f"[Webhook] Nhận sự kiện: {event} | Kiểu tin: {message_type} | Private: {is_private}")
     
-    # 2. Kiểm tra điều kiện để AI xử lý tin nhắn
-    # - Sự kiện phải là tạo tin nhắn mới
-    # - Tin nhắn phải từ khách hàng gửi đến (incoming)
-    # - Không phải là ghi chú nội bộ (private)
     if event == "message_created" and message_type == "incoming" and not is_private:
-        # Trích xuất thông tin định danh
         account_info = payload.get("account", {})
         account_id = account_info.get("id")
         
         conversation_info = payload.get("conversation", {})
         conversation_id = conversation_info.get("id")
         
-        # Nếu payload định dạng dẹt (tùy phiên bản Chatwoot)
         if not account_id:
             account_id = payload.get("account_id")
         if not conversation_id:
             conversation_id = payload.get("conversation_id")
             
-        # Kiểm tra tính hợp lệ của dữ liệu nhận được
         if not account_id or not conversation_id:
             print("[Webhook] Lỗi: Không trích xuất được account_id hoặc conversation_id.")
             return {"status": "ignored", "reason": "Missing identifiers"}
             
         if not content or not content.strip():
-            print("[Webhook] Bỏ qua: Tin nhắn không chứa văn bản (có thể là hình ảnh hoặc file đính kèm).")
+            print("[Webhook] Bỏ qua: Tin nhắn không chứa văn bản.")
             return {"status": "ignored", "reason": "Empty message content"}
             
-        # 3. Kích hoạt Background Task để xử lý RAG & gửi trả lời
-        print(f"[Webhook] Nhận tin nhắn hợp lệ từ Conversation #{conversation_id}. Đang lên lịch xử lý ngầm...")
+        print(f"[Webhook] Nhận tin nhắn từ Conversation #{conversation_id}. Đang lên lịch xử lý ngầm...")
         background_tasks.add_task(
             process_rag_and_reply_chatwoot,
             account_id=account_id,
@@ -168,7 +241,6 @@ async def chatwoot_webhook(background_tasks: BackgroundTasks, payload: dict = Bo
         return {"status": "processing", "message": "RAG task dispatched successfully"}
         
     else:
-        # Bỏ qua các sự kiện không liên quan (ví dụ tin nhắn bot gửi đi, đổi trạng thái phòng chat, v.v.)
         reason = "Event or message type not targeted"
         if message_type == "outgoing":
             reason = "Ignored outgoing message to prevent infinite reply loop"
@@ -179,10 +251,10 @@ async def chatwoot_webhook(background_tasks: BackgroundTasks, payload: dict = Bo
         return {"status": "ignored", "reason": reason}
 
 
-# Khởi chạy trực tiếp bằng python main.py để thuận tiện chạy thử
+# Khởi chạy uvicorn
 if __name__ == "__main__":
     import uvicorn
-    # Đọc cấu hình Port từ .env
     port = int(os.getenv("PORT", 8000))
     print(f"--- Đang khởi động FastAPI Server tại port {port} ---")
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+

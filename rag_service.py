@@ -1,8 +1,8 @@
 import os
 import uuid
 from dotenv import load_dotenv
-from openai import OpenAI
-from qdrant_client import QdrantClient
+from openai import AsyncOpenAI
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
 
 # Load các biến môi trường từ file .env
@@ -17,39 +17,27 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "knowledge_base")
 
-# Khởi tạo OpenAI Client
-# Thư viện OpenAI tự động đọc OPENAI_API_KEY từ biến môi trường,
-# nhưng ta truyền tường minh để code rõ ràng và dễ học.
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+# Khởi tạo OpenAI Client bất đồng bộ
+async_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# Khởi tạo Qdrant Client
-# - PHÂN BIỆT CLOUD & LOCAL:
-#   + Chạy Qdrant Cloud (Platform Qdrant): Truyền cả QDRANT_URL (dạng https://...) và QDRANT_API_KEY.
-#   + Chạy Qdrant Local bằng Docker: Chỉ cần truyền QDRANT_URL (http://localhost:6333) và bỏ trống API Key.
+# Khởi tạo Qdrant Client bất đồng bộ
 if QDRANT_API_KEY:
-    print(f"[Qdrant] Đang kết nối tới Qdrant Cloud tại: {QDRANT_URL}")
-    qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    print(f"[Qdrant] Đang kết nối async tới Qdrant Cloud tại: {QDRANT_URL}")
+    async_qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 else:
-    print(f"[Qdrant] Đang kết nối tới Qdrant Local tại: {QDRANT_URL}")
-    qdrant_client = QdrantClient(url=QDRANT_URL)
+    print(f"[Qdrant] Đang kết nối async tới Qdrant Local tại: {QDRANT_URL}")
+    async_qdrant_client = AsyncQdrantClient(url=QDRANT_URL)
 
 
-def chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> list[str]:
+def chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 100) -> list[str]:
     """
     Chia nhỏ văn bản dài thành các đoạn (chunks) có kích thước cố định kèm độ gối đầu (overlap).
-    
-    TẠI SAO CẦN CHUNKING?
-    1. Giới hạn ngữ cảnh (Context Window): Các mô hình LLM có giới hạn số lượng token đầu vào. Ta không thể gửi cả cuốn sách cho LLM được.
-    2. Tìm kiếm chính xác hơn: Việc chia nhỏ giúp tìm đúng đoạn thông tin chứa câu trả lời, thay vì tìm kiếm trên một file tài liệu khổng lồ khiến kết quả bị loãng.
-    3. Tránh mất thông tin: Độ gối đầu (overlap) giúp giữ ngữ cảnh liền mạch giữa các đoạn liền kề, tránh trường hợp câu văn quan trọng bị cắt đôi ở ranh giới phân mảnh.
+    Sử dụng cơ chế cắt chuỗi đơn giản theo số ký tự.
     """
     chunks = []
     start = 0
-    # Loại bỏ khoảng trắng thừa ở hai đầu
     text = text.strip()
     
-    # Thực hiện cắt chuỗi đơn giản bằng số ký tự (character-based slicing)
-    # Đây là phương án đơn giản, trực quan và dễ hiểu nhất để học tập.
     while start < len(text):
         end = start + chunk_size
         chunk = text[start:end]
@@ -59,105 +47,175 @@ def chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> lis
     return chunks
 
 
-def get_embedding(text: str) -> list[float]:
+async def async_get_embedding(text: str) -> list[float]:
     """
-    Chuyển đổi một đoạn văn bản thành vector biểu diễn ngữ nghĩa (embedding).
-    Sử dụng model: text-embedding-3-large (Mặc định trả về vector 3072 chiều).
-    
-    TẠI SAO CẦN EMBEDDING?
-    - Máy tính và Vector Database không thể hiểu từ ngữ một cách trực tiếp như con người.
-    - Embedding chuyển văn bản thành một chuỗi số (vector). Các từ/câu có nghĩa tương đồng nhau
-      sẽ được ánh xạ thành các vector nằm gần nhau trong không gian đa chiều (Semantic Space).
-    - Ví dụ: Vector của "Hà Nội" sẽ nằm gần vector của "Thủ đô Việt Nam" hơn là vector của "Trái chuối".
+    Chuyển đổi một đoạn văn bản thành vector biểu diễn ngữ nghĩa (embedding) bất đồng bộ.
     """
-    response = openai_client.embeddings.create(
+    response = await async_openai_client.embeddings.create(
         input=text,
         model=EMBEDDING_MODEL
     )
     return response.data[0].embedding
 
 
-def init_collection():
+async def async_get_embeddings_batch(texts: list[str]) -> list[list[float]]:
     """
-    Khởi tạo collection trong Qdrant nếu chưa tồn tại.
-    - Kích thước vector: 3072 (đặc trưng của model text-embedding-3-large).
-    - Khoảng cách Metric sử dụng là Cosine Similarity (phổ biến nhất cho so khớp ngữ nghĩa văn bản).
-    
-    VECTOR DATABASE HOẠT ĐỘNG THẾ NÀO?
-    - Vector DB lưu trữ các vectors cùng với metadata (ở đây là đoạn văn bản gốc).
-    - Nó được tối ưu hóa để thực hiện các phép toán khoảng cách hình học cực nhanh trên hàng triệu vectors.
-    - Khi ta tìm kiếm, nó không tìm từ khóa (như Ctrl+F hay SQL LIKE), mà nó tìm các vector có hướng gần trùng nhau nhất.
+    Tạo embedding cho danh sách các đoạn văn bản cùng một lúc (Batching).
     """
-    # Kiểm tra xem collection đã tồn tại chưa
-    if not qdrant_client.collection_exists(collection_name=QDRANT_COLLECTION_NAME):
+    if not texts:
+        return []
+    response = await async_openai_client.embeddings.create(
+        input=texts,
+        model=EMBEDDING_MODEL
+    )
+    return [data.embedding for data in response.data]
+
+
+async def async_init_collection():
+    """
+    Khởi tạo collection trong Qdrant bất đồng bộ nếu chưa tồn tại.
+    - Kích thước vector: 3072 (text-embedding-3-large).
+    - Sử dụng Cosine Similarity.
+    """
+    exists = await async_qdrant_client.collection_exists(collection_name=QDRANT_COLLECTION_NAME)
+    if not exists:
         print(f"[Qdrant] Collection '{QDRANT_COLLECTION_NAME}' chưa tồn tại. Tiến hành khởi tạo...")
-        qdrant_client.create_collection(
+        await async_qdrant_client.create_collection(
             collection_name=QDRANT_COLLECTION_NAME,
             vectors_config=models.VectorParams(
-                size=3072,  # Kích thước vector 3072 chiều (text-embedding-3-large)
-                distance=models.Distance.COSINE  # Sử dụng so khớp Cosine Similarity
+                size=3072,
+                distance=models.Distance.COSINE
             )
         )
         print(f"[Qdrant] Đã tạo thành công collection: {QDRANT_COLLECTION_NAME}")
 
 
-def ingest_document(text: str) -> int:
+async def async_delete_product_vectors(product_id: str):
     """
-    Nhập tài liệu tri thức vào hệ thống RAG:
-    Quy trình:
-    1. Chia nhỏ văn bản dài thành các chunks.
-    2. Với mỗi chunk, gọi OpenAI Embedding API để lấy vector 3072 chiều.
-    3. Tạo cấu trúc Point (gồm ID, vector và payload chứa văn bản gốc).
-    4. Lưu toàn bộ các Points vào Vector Database Qdrant.
+    Xóa tất cả các point có payload.product_id trùng khớp với product_id để tránh trùng lặp/rác dữ liệu.
     """
-    # Đảm bảo collection đã được tạo
-    init_collection()
+    await async_init_collection()
+    print(f"[Qdrant] Đang xóa toàn bộ các vector cũ của product_id: '{product_id}'...")
+    await async_qdrant_client.delete(
+        collection_name=QDRANT_COLLECTION_NAME,
+        points_selector=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="product_id",
+                    match=models.MatchValue(value=product_id)
+                )
+            ]
+        )
+    )
+    print(f"[Qdrant] Đã dọn dẹp xong vector cũ cho product_id: '{product_id}'.")
+
+
+async def async_ingest_product(
+    product_id: str,
+    name: str,
+    description_short: str,
+    description: str,
+    ingredient: str,
+    product_type: str
+) -> int:
+    """
+    Nạp dữ liệu sản phẩm có cấu trúc từ Admin vào Qdrant (Xóa trước, Nạp sau).
+    """
+    # 1. Khởi tạo collection nếu chưa có
+    await async_init_collection()
     
-    # Bước 1: Chia nhỏ văn bản
-    chunks = chunk_text(text)
-    print(f"[Ingest] Đã phân mảnh tài liệu thành {len(chunks)} đoạn nhỏ.")
+    # 2. Thực hiện xóa toàn bộ vector cũ của product_id này để tránh rác dữ liệu
+    await async_delete_product_vectors(product_id)
     
+    # 3. Ráp dữ liệu thành Structured Markdown để giữ ngữ cảnh đầy đủ cho mỗi chunk
+    full_structured_text = (
+        f"Sản phẩm: {name}\n"
+        f"Phân loại: {product_type}\n"
+        f"Mô tả ngắn: {description_short}\n"
+        f"Thành phần chính: {ingredient}\n"
+        f"Chi tiết sản phẩm: {description}"
+    )
+    
+    # 4. Phân mảnh (chunking) thông minh
+    chunks = chunk_text(full_structured_text, chunk_size=1000, chunk_overlap=100)
+    print(f"[Ingest] Đã phân mảnh sản phẩm '{name}' thành {len(chunks)} đoạn.")
+    
+    # 5. Tạo Embeddings hàng loạt (Batching) cho tất cả các chunk cùng lúc
+    print(f"[Ingest] Đang sinh embedding hàng loạt cho {len(chunks)} chunks...")
+    vectors = await async_get_embeddings_batch(chunks)
+    
+    # 6. Tạo PointStruct để upsert vào Qdrant kèm Metadata phong phú
     points = []
-    # Bước 2: Tạo embedding cho từng đoạn
-    for i, chunk in enumerate(chunks):
-        print(f"[Ingest] Đang tạo embedding cho chunk {i+1}/{len(chunks)}...")
-        vector = get_embedding(chunk)
-        point_id = str(uuid.uuid4()) # Sinh ID duy nhất cho mỗi vector
-        
-        # Thêm Point vào danh sách
+    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        point_id = str(uuid.uuid4())
         points.append(
             models.PointStruct(
                 id=point_id,
                 vector=vector,
-                payload={"text": chunk} # Lưu văn bản gốc để hiển thị/làm ngữ cảnh sau này
+                payload={
+                    "text": chunk,
+                    "product_id": product_id,
+                    "product_name": name,
+                    "product_type": product_type,
+                    "chunk_index": i
+                }
             )
         )
-    
-    # Bước 3: Đẩy dữ liệu vào Qdrant
-    print(f"[Qdrant] Đang lưu {len(points)} vectors vào database...")
-    qdrant_client.upsert(
+        
+    # 7. Upsert hàng loạt vào Qdrant
+    print(f"[Qdrant] Đang lưu batch {len(points)} vectors cho sản phẩm '{name}'...")
+    await async_qdrant_client.upsert(
         collection_name=QDRANT_COLLECTION_NAME,
         points=points
     )
-    print("[Qdrant] Lưu thành công!")
+    print(f"[Qdrant] Đồng bộ thành công sản phẩm '{name}'!")
     return len(chunks)
 
 
-def search_similar_chunks(query: str, limit: int = 3) -> list[str]:
+async def async_ingest_document(text: str) -> int:
     """
-    Tìm kiếm các đoạn văn bản có nghĩa gần nhất với câu hỏi:
-    Quy trình:
-    1. Sinh vector embedding cho câu hỏi của User.
-    2. Sử dụng Qdrant Search để thực hiện Similarity Search (Tìm top vectors gần nhất).
-    3. Trích xuất và trả về nội dung text gốc trong payload.
+    Nhập tài liệu tri thức văn bản thô vào Qdrant bất đồng bộ.
     """
-    init_collection()
+    await async_init_collection()
+    chunks = chunk_text(text, chunk_size=500, chunk_overlap=50)
+    print(f"[Ingest] Đã phân mảnh tài liệu thành {len(chunks)} đoạn nhỏ.")
+    
+    vectors = await async_get_embeddings_batch(chunks)
+    
+    points = []
+    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        point_id = str(uuid.uuid4())
+        points.append(
+            models.PointStruct(
+                id=point_id,
+                vector=vector,
+                payload={
+                    "text": chunk,
+                    "product_id": "general_knowledge",
+                    "product_name": "Tài liệu chung"
+                }
+            )
+        )
+        
+    await async_qdrant_client.upsert(
+        collection_name=QDRANT_COLLECTION_NAME,
+        points=points
+    )
+    print(f"[Qdrant] Lưu thành công tài liệu tri thức chung!")
+    return len(chunks)
+
+
+async def async_search_similar_chunks(query: str, limit: int = 3) -> list[str]:
+    """
+    Tìm kiếm các đoạn văn bản có nghĩa gần nhất với câu hỏi bất đồng bộ.
+    """
+    await async_init_collection()
     
     # Bước 1: Sinh vector cho câu hỏi
-    query_vector = get_embedding(query)
+    query_vector = await async_get_embedding(query)
     
     # Bước 2: Truy vấn Qdrant
-    search_result = qdrant_client.search(
+    search_result = await async_qdrant_client.search(
         collection_name=QDRANT_COLLECTION_NAME,
         query_vector=query_vector,
         limit=limit
@@ -167,22 +225,19 @@ def search_similar_chunks(query: str, limit: int = 3) -> list[str]:
     contexts = []
     for hit in search_result:
         contexts.append(hit.payload["text"])
-        print(f"[Search] Tìm thấy chunk tương đồng (Score: {hit.score:.4f}): '{hit.payload['text'][:60]}...'")
+        print(f"[Search] Tìm thấy chunk tương đồng (Score: {hit.score:.4f}): '{hit.payload.get('text', '')[:60]}...'")
         
     return contexts
 
 
-def generate_rag_response(query: str) -> str:
+async def async_generate_rag_response(query: str) -> str:
     """
-    Thực hiện luồng RAG (Retrieval-Augmented Generation) hoàn chỉnh:
-    1. TÌM KIẾM (Retrieval): Gọi Vector DB tìm các ngữ cảnh liên quan nhất với câu hỏi.
-    2. GHÉP PROMPT (Augmentation): Đưa các đoạn ngữ cảnh tìm được vào System Prompt mẫu (Hỗ trợ đa ngôn ngữ).
-    3. SINH ĐÁP ÁN (Generation): Gửi Prompt hoàn chỉnh cho LLM (GPT-4o-mini) để sinh câu trả lời chuẩn xác.
+    Thực hiện luồng RAG hoàn chỉnh bất đồng bộ.
     """
     print(f"[RAG] Bắt đầu xử lý câu hỏi: '{query}'")
     
     # 1. TÌM KIẾM
-    contexts = search_similar_chunks(query, limit=3)
+    contexts = await async_search_similar_chunks(query, limit=3)
     
     if not contexts:
         context_text = "Không tìm thấy thông tin nào trong kho tri thức của hệ thống."
@@ -190,15 +245,13 @@ def generate_rag_response(query: str) -> str:
         context_text = "\n---\n".join(contexts)
         
     # 2. GHÉP PROMPT (Đa ngôn ngữ)
-    # Prompt chỉ đạo LLM trả lời bằng chính ngôn ngữ mà người dùng hỏi
     system_prompt = (
-        "Bạn là một Trợ lý ảo hỗ trợ khách hàng chuyên nghiệp, lịch sự và chu đáo.\n"
+        "Bạn là một Trợ lý ảo hỗ trợ khách hàng chuyên nghiệp, lịch sự và chu đáo về Thực phẩm chức năng.\n"
         "Nhiệm vụ của bạn là trả lời câu hỏi của khách hàng dựa trên NGUỒN NGỮ CẢNH (Context) được cung cấp dưới đây.\n"
         "Hãy tuân thủ nghiêm ngặt các nguyên tắc sau:\n"
         "1. ĐA NGÔN NGỮ (Multi-language): Hãy trả lời câu hỏi bằng CHÍNH NGÔN NGỮ mà khách hàng đã dùng để hỏi.\n"
         "   - Nếu khách hàng hỏi bằng tiếng Việt -> trả lời bằng tiếng Việt.\n"
-        "   - Nếu khách hàng hỏi bằng tiếng Anh (English) -> dịch thông tin liên quan từ Context và trả lời bằng tiếng Anh.\n"
-        "   - Nếu khách hàng hỏi bằng tiếng Nhật (Japanese) -> trả lời bằng tiếng Nhật.\n"
+        "   - Nếu khách hàng hỏi bằng tiếng Anh -> dịch thông tin liên quan từ Context và trả lời bằng tiếng Anh.\n"
         "2. CHỈ sử dụng thông tin trong Nguồn Ngữ Cảnh để trả lời. Không được tự ý bịa đặt hoặc suy diễn thông tin ngoài.\n"
         "3. Trả lời ngắn gọn, súc tích và trực tiếp giải quyết câu hỏi của khách hàng.\n"
         "4. Nếu trong Nguồn Ngữ Cảnh KHÔNG chứa thông tin nào để trả lời câu hỏi, hãy phản hồi lịch sự bằng chính ngôn ngữ của người dùng:\n"
@@ -209,15 +262,16 @@ def generate_rag_response(query: str) -> str:
     
     # 3. SINH ĐÁP ÁN
     print("[LLM] Đang gọi OpenAI GPT-4o-mini...")
-    response = openai_client.chat.completions.create(
+    response = await async_openai_client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query}
         ],
-        temperature=0.3 # Giữ nhiệt độ thấp để LLM trả lời nghiêm túc, bám sát context, tránh bị ảo tưởng (hallucination)
+        temperature=0.0 # Giữ nhiệt độ bằng 0.0 để tránh bịa đặt thông tin y tế/TPCN
     )
     
     answer = response.choices[0].message.content
     print("[RAG] Đã sinh ra câu trả lời thành công.")
     return answer
+

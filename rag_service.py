@@ -76,6 +76,7 @@ async def async_init_collection():
     Khởi tạo collection trong Qdrant bất đồng bộ nếu chưa tồn tại.
     - Kích thước vector: 3072 (text-embedding-3-large).
     - Sử dụng Cosine Similarity.
+    - Tạo Payload Indexes cho doc_type và product_id để tối ưu hóa truy vấn/xóa.
     """
     exists = await async_qdrant_client.collection_exists(collection_name=QDRANT_COLLECTION_NAME)
     if not exists:
@@ -88,6 +89,21 @@ async def async_init_collection():
             )
         )
         print(f"[Qdrant] Đã tạo thành công collection: {QDRANT_COLLECTION_NAME}")
+        
+    # Đảm bảo Payload Indexes luôn được tạo (an toàn gọi nhiều lần)
+    try:
+        await async_qdrant_client.create_payload_index(
+            collection_name=QDRANT_COLLECTION_NAME,
+            field_name="doc_type",
+            field_schema=models.PayloadSchemaType.KEYWORD
+        )
+        await async_qdrant_client.create_payload_index(
+            collection_name=QDRANT_COLLECTION_NAME,
+            field_name="product_id",
+            field_schema=models.PayloadSchemaType.KEYWORD
+        )
+    except Exception as e:
+        print(f"[Qdrant] Lưu ý khi tạo Payload Index: {str(e)}")
 
 
 async def async_delete_product_vectors(product_id: str):
@@ -154,6 +170,7 @@ async def async_ingest_product(
                 vector=vector,
                 payload={
                     "text": chunk,
+                    "doc_type": "product",  # Đánh nhãn loại dữ liệu sản phẩm
                     "product_id": product_id,
                     "product_name": name,
                     "product_type": product_type,
@@ -191,8 +208,10 @@ async def async_ingest_document(text: str) -> int:
                 vector=vector,
                 payload={
                     "text": chunk,
+                    "doc_type": "general_knowledge",  # Đánh nhãn loại dữ liệu tài liệu chung
                     "product_id": "general_knowledge",
-                    "product_name": "Tài liệu chung"
+                    "product_name": "Tài liệu chung",
+                    "chunk_index": i
                 }
             )
         )
@@ -225,7 +244,9 @@ async def async_search_similar_chunks(query: str, limit: int = 3) -> list[str]:
     contexts = []
     for hit in search_result:
         contexts.append(hit.payload["text"])
-        print(f"[Search] Tìm thấy chunk tương đồng (Score: {hit.score:.4f}): '{hit.payload.get('text', '')[:60]}...'")
+        doc_type = hit.payload.get("doc_type", "N/A")
+        prod_name = hit.payload.get("product_name", "N/A")
+        print(f"[Search] Tìm thấy chunk tương đồng (Score: {hit.score:.4f} | Type: {doc_type} | Name: {prod_name}): '{hit.payload.get('text', '')[:60]}...'")
         
     return contexts
 

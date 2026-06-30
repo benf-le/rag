@@ -129,10 +129,10 @@ async def async_delete_product_vectors(product_id: str):
 async def async_ingest_product(
     product_id: str,
     name: str,
-    description_short: str,
     description: str,
-    ingredient: str,
-    product_type: str
+    price: float,
+    unit: str,
+    category: str
 ) -> int:
     """
     Nạp dữ liệu sản phẩm có cấu trúc từ Admin vào Qdrant (Xóa trước, Nạp sau).
@@ -146,10 +146,9 @@ async def async_ingest_product(
     # 3. Ráp dữ liệu thành Structured Markdown để giữ ngữ cảnh đầy đủ cho mỗi chunk
     full_structured_text = (
         f"Sản phẩm: {name}\n"
-        f"Phân loại: {product_type}\n"
-        f"Mô tả ngắn: {description_short}\n"
-        f"Thành phần chính: {ingredient}\n"
-        f"Chi tiết sản phẩm: {description}"
+        f"Danh mục: {category}\n"
+        f"Giá bán: {price:,} VNĐ / {unit}\n"
+        f"Mô tả sản phẩm: {description}"
     )
     
     # 4. Phân mảnh (chunking) thông minh
@@ -173,7 +172,9 @@ async def async_ingest_product(
                     "doc_type": "product",  # Đánh nhãn loại dữ liệu sản phẩm
                     "product_id": product_id,
                     "product_name": name,
-                    "product_type": product_type,
+                    "product_category": category,
+                    "product_price": price,
+                    "product_unit": unit,
                     "chunk_index": i
                 }
             )
@@ -251,9 +252,9 @@ async def async_search_similar_chunks(query: str, limit: int = 3) -> list[str]:
     return contexts
 
 
-async def async_generate_rag_response(query: str) -> str:
+async def async_generate_rag_response(query: str, history: list = None) -> str:
     """
-    Thực hiện luồng RAG hoàn chỉnh bất đồng bộ.
+    Thực hiện luồng RAG hoàn chỉnh bất đồng bộ có kèm lịch sử chat.
     """
     print(f"[RAG] Bắt đầu xử lý câu hỏi: '{query}'")
     
@@ -265,31 +266,39 @@ async def async_generate_rag_response(query: str) -> str:
     else:
         context_text = "\n---\n".join(contexts)
         
-    # 2. GHÉP PROMPT (Đa ngôn ngữ)
+    # 2. GHÉP PROMPT (Đa ngôn ngữ & Cửa hàng Thực phẩm)
     system_prompt = (
-        "Bạn là một Trợ lý ảo hỗ trợ khách hàng chuyên nghiệp, lịch sự và chu đáo về Thực phẩm chức năng.\n"
+        "Bạn là một Trợ lý ảo hỗ trợ khách hàng chuyên nghiệp, lịch sự và chu đáo của cửa hàng thực phẩm sạch FreshMart.\n"
         "Nhiệm vụ của bạn là trả lời câu hỏi của khách hàng dựa trên NGUỒN NGỮ CẢNH (Context) được cung cấp dưới đây.\n"
         "Hãy tuân thủ nghiêm ngặt các nguyên tắc sau:\n"
         "1. ĐA NGÔN NGỮ (Multi-language): Hãy trả lời câu hỏi bằng CHÍNH NGÔN NGỮ mà khách hàng đã dùng để hỏi.\n"
         "   - Nếu khách hàng hỏi bằng tiếng Việt -> trả lời bằng tiếng Việt.\n"
         "   - Nếu khách hàng hỏi bằng tiếng Anh -> dịch thông tin liên quan từ Context và trả lời bằng tiếng Anh.\n"
         "2. CHỈ sử dụng thông tin trong Nguồn Ngữ Cảnh để trả lời. Không được tự ý bịa đặt hoặc suy diễn thông tin ngoài.\n"
-        "3. Trả lời ngắn gọn, súc tích và trực tiếp giải quyết câu hỏi của khách hàng.\n"
+        "3. Trả lời ngắn gọn, súc tích, thân thiện và trực tiếp giải quyết câu hỏi của khách hàng.\n"
         "4. Nếu trong Nguồn Ngữ Cảnh KHÔNG chứa thông tin nào để trả lời câu hỏi, hãy phản hồi lịch sự bằng chính ngôn ngữ của người dùng:\n"
-        "   - Ví dụ (Tiếng Việt): \"Dạ, xin lỗi anh/chị, hiện tại em chưa có thông tin về vấn đề này. Em sẽ ghi nhận để cập nhật sớm nhất ạ.\"\n"
-        "   - Ví dụ (Tiếng Anh): \"I am sorry, but I do not have information about this issue right now. I will record it to update as soon as possible.\"\n\n"
+        "   - Ví dụ (Tiếng Việt): \"Dạ, xin lỗi anh/chị, hiện tại em chưa thấy sản phẩm hoặc thông tin này trong hệ thống. Em sẽ ghi nhận để cập nhật sớm nhất ạ.\"\n"
+        "   - Ví dụ (Tiếng Anh): \"I am sorry, but I do not have information about this product or issue right now. I will record it to update as soon as possible.\"\n\n"
         f"--- BẮT ĐẦU NGUỒN NGỮ CẢNH ---\n{context_text}\n--- KẾT THÚC NGUỒN NGỮ CẢNH ---"
     )
     
-    # 3. SINH ĐÁP ÁN
+    # 3. CHUẨN BỊ MESSAGES KÈM LỊCH SỬ CHAT
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    if history:
+        for msg in history:
+            # Map role (user -> user, model/bot/assistant -> assistant)
+            role = "user" if msg.role == "user" else "assistant"
+            messages.append({"role": role, "content": msg.message})
+            
+    messages.append({"role": "user", "content": query})
+    
+    # 4. SINH ĐÁP ÁN
     print("[LLM] Đang gọi OpenAI GPT-4o-mini...")
     response = await async_openai_client.chat.completions.create(
         model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query}
-        ],
-        temperature=0.0 # Giữ nhiệt độ bằng 0.0 để tránh bịa đặt thông tin y tế/TPCN
+        messages=messages,
+        temperature=0.0 # Giữ nhiệt độ bằng 0.0 để tránh bịa đặt thông tin
     )
     
     answer = response.choices[0].message.content

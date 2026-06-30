@@ -41,20 +41,41 @@ class IngestRequest(BaseModel):
 class ProductIngestRequest(BaseModel):
     product_id: str
     name: str
-    descriptionShort: str
     description: str
-    ingredient: str
-    type: str
+    price: float
+    unit: str
+    category: str
 
     class Config:
         json_schema_extra = {
             "example": {
-                "product_id": "sp_alipas_01",
-                "name": "Sâm Alipas",
-                "descriptionShort": "Tăng cường sinh lực nam giới, kéo dài sung mãn.",
-                "description": "Sâm Alipas mới chứa các tinh chất quý hỗ trợ tăng cường testosterone nội sinh, làm chậm quá trình mãn dục nam và hỗ trợ cải thiện rối loạn cương dương.",
-                "ingredient": "Mật nhân (Eurycoma Longifolia), Tinh chất thông biển Pháp, chiết xuất hàu đại dương.",
-                "type": "Sinh lý nam"
+                "product_id": "1",
+                "name": "Táo đỏ Mỹ",
+                "description": "Táo đỏ nhập khẩu trực tiếp từ Mỹ, vị ngọt thanh, giòn ngon tự nhiên.",
+                "price": 150000.0,
+                "unit": "kg",
+                "category": "Trái cây nhập khẩu"
+            }
+        }
+
+
+class ChatMessageItem(BaseModel):
+    role: str  # 'user' hoặc 'model'/'bot'/'assistant'
+    message: str
+
+
+class ChatQueryRequest(BaseModel):
+    query: str
+    history: list[ChatMessageItem] = []
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "query": "Có táo đỏ ngon không em?",
+                "history": [
+                  {"role": "user", "message": "Chào bạn"},
+                  {"role": "model", "message": "Chào bạn 👋! Tôi là trợ lý ảo hỗ trợ tìm kiếm sản phẩm. Tôi có thể giúp gì cho bạn hôm nay?"}
+                ]
             }
         }
 
@@ -102,6 +123,36 @@ async def health_check():
     return JSONResponse(content=health_status, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
+@app.post("/api/chat", summary="Hỏi đáp Chatbot RAG đồng bộ")
+async def chat_rag_endpoint(payload: ChatQueryRequest):
+    """
+    API endpoint nhận câu hỏi của người dùng cùng lịch sử chat, 
+    truy vấn Vector DB Qdrant để lấy context liên quan, gọi OpenAI LLM sinh phản hồi đồng bộ.
+    """
+    if not payload.query or not payload.query.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Nội dung câu hỏi (query) không được để trống."
+        )
+        
+    try:
+        # Gọi rag_service sinh câu trả lời
+        answer = await async_generate_rag_response(
+            query=payload.query.strip(),
+            history=payload.history
+        )
+        
+        return {
+            "status": "success",
+            "answer": answer
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi hệ thống khi xử lý RAG chat: {str(e)}"
+        )
+
+
 @app.post("/ingest", summary="Nhập tài liệu tri thức chung vào Vector DB")
 async def ingest_data(payload: IngestRequest):
     """
@@ -130,7 +181,7 @@ async def ingest_data(payload: IngestRequest):
         )
 
 
-@app.post("/ingest/product", summary="Nạp hoặc Cập nhật 1 sản phẩm TPCN có cấu trúc")
+@app.post("/ingest/product", summary="Nạp hoặc Cập nhật 1 sản phẩm có cấu trúc")
 async def ingest_single_product(payload: ProductIngestRequest):
     """
     API endpoint nhận thông tin 1 sản phẩm từ Admin CMS để nạp/cập nhật vector vào Qdrant.
@@ -140,10 +191,10 @@ async def ingest_single_product(payload: ProductIngestRequest):
         chunks_created = await async_ingest_product(
             product_id=payload.product_id.strip(),
             name=payload.name.strip(),
-            description_short=payload.descriptionShort.strip(),
             description=payload.description.strip(),
-            ingredient=payload.ingredient.strip(),
-            product_type=payload.type.strip()
+            price=payload.price,
+            unit=payload.unit.strip(),
+            category=payload.category.strip()
         )
         return {
             "status": "success",
@@ -157,10 +208,10 @@ async def ingest_single_product(payload: ProductIngestRequest):
         )
 
 
-@app.post("/ingest/products/bulk", summary="Nạp hàng loạt nhiều sản phẩm TPCN (Bulk Import)")
+@app.post("/ingest/products/bulk", summary="Nạp hàng loạt nhiều sản phẩm (Bulk Import)")
 async def ingest_bulk_products(payload: list[ProductIngestRequest]):
     """
-    API endpoint nhận danh sách nhiều sản phẩm để nạp hàng loạt (phục vụ import 49 sản phẩm ban đầu từ Admin).
+    API endpoint nhận danh sách nhiều sản phẩm để nạp hàng loạt.
     """
     if not payload:
         raise HTTPException(
@@ -177,10 +228,10 @@ async def ingest_bulk_products(payload: list[ProductIngestRequest]):
             chunks_created = await async_ingest_product(
                 product_id=prod.product_id.strip(),
                 name=prod.name.strip(),
-                description_short=prod.descriptionShort.strip(),
                 description=prod.description.strip(),
-                ingredient=prod.ingredient.strip(),
-                product_type=prod.type.strip()
+                price=prod.price,
+                unit=prod.unit.strip(),
+                category=prod.category.strip()
             )
             total_chunks += chunks_created
             success_products.append(prod.name)

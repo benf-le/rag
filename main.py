@@ -208,6 +208,25 @@ async def ingest_single_product(payload: ProductIngestRequest):
         )
 
 
+@app.delete("/ingest/product/{product_id}", summary="Xóa vector của 1 sản phẩm")
+async def delete_single_product_vectors(product_id: str):
+    """
+    API endpoint xóa toàn bộ các vector liên quan đến product_id trong Qdrant.
+    """
+    try:
+        from rag_service import async_delete_product_vectors
+        await async_delete_product_vectors(product_id.strip())
+        return {
+            "status": "success",
+            "message": f"Đã xóa toàn bộ vector của sản phẩm ID '{product_id}'."
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi hệ thống khi xóa sản phẩm '{product_id}': {str(e)}"
+        )
+
+
 @app.post("/ingest/products/bulk", summary="Nạp hàng loạt nhiều sản phẩm (Bulk Import)")
 async def ingest_bulk_products(payload: list[ProductIngestRequest]):
     """
